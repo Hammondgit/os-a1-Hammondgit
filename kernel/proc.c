@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "uproc.h"
 
 struct cpu cpus[NCPU];
 
@@ -168,6 +169,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->trace_mask = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -277,6 +279,8 @@ kfork(void)
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
+
+  np->trace_mask = p->trace_mask; //creates a child, the child inherits the trace settings.
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
@@ -700,4 +704,76 @@ procdump(void)
     printk("%d %s %s", p->pid, state, p->name);
     printk("\n");
   }
+}
+
+uint64
+nproc(void)
+{
+  uint64 count = 0;
+  struct proc *p;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED)
+      count++;
+    release(&p->lock);
+  }
+
+  return count;
+}
+
+
+//This function:
+//- Returns -1 if max is negative or a user-memory copy fails.
+//- Skips unused process slots.
+//- Copies entries in process-table order.
+//- Stops after max entries.
+
+uint64
+sys_getprocs(void)
+{
+  uint64 addr;
+  int max;
+  int copied = 0;
+  struct proc *p;
+  struct proc *current = myproc();
+  struct uproc info;
+
+  argaddr(0, &addr);
+  argint(1, &max);
+
+  if (max < 0)
+    return -1;
+
+  for (p = proc; p < &proc[NPROC] && copied < max; p++) {
+    // Lock in the required order: wait_lock before p->lock.
+    acquire(&wait_lock);
+    acquire(&p->lock);
+
+    if (p->state == UNUSED) {
+      release(&p->lock);
+      release(&wait_lock);
+      continue;
+    }
+
+    // Copy process information into one local structure.
+    info.pid = p->pid;
+    info.ppid = p->parent ? p->parent->pid : 0;
+    info.state = p->state;
+    info.sz = p->sz;
+    safestrcpy(info.name, p->name, sizeof(info.name));
+
+    // Release both locks before copying to user memory.
+    release(&p->lock);
+    release(&wait_lock);
+
+    if (copyout(current->pagetable, current->sz,
+                addr + copied * sizeof(struct uproc),
+                (char *)&info, sizeof(struct uproc)) < 0)
+      return -1;
+
+    copied++;
+  }
+
+  return copied;
 }

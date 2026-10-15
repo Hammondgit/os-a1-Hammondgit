@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -109,4 +110,36 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  int mask;
+
+  argint(0, &mask);
+  myproc()->trace_mask = mask;
+
+  return 0;
+}
+
+
+uint64
+sys_sysinfo(void)   //validate the user memory range
+{
+  uint64 addr;
+  struct sysinfo info;
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+
+  info.freemem = freemem();
+  info.nproc = nproc();
+  info.nopenfile = nopenfile();
+
+  if (copyout(p->pagetable, p->sz, addr,
+              (char *)&info, sizeof(info)) < 0)
+    return -1;
+
+  return 0;
 }
